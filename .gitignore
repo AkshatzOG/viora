@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+.env
+logs/*.log
+.music_cache.json

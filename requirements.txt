@@ -1,0 +1,7 @@
+flask>=3.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+yt-dlp>=2026.8.19
+python-mpv-jsonipc>=1.2.3
+numpy>=1.26.0
+soundcard>=0.4.6
