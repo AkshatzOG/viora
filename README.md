@@ -21,29 +21,38 @@ Viora is a local-first music discovery and listening app. It brings together per
 - **Persistent personal data.** SQLite stores library metadata, playlists, favorites, history, taste, recent searches, settings, and agent conversation. Use Settings to back up or restore the database.
 - **A full Now Playing view.** Expand the current song, use playback controls, and stop the active track while keeping the upcoming queue. Idle screens include a prompt instead of a blank player.
 
+## Download Viora
+
+Viora is distributed in two parts because GitHub does not accept an individual file larger than 100 MB:
+
+- **Full Windows bundle:** use the Viora ZIP shared in the [Viora Telegram community](https://t.me/+A-WF1i2q7aJhMzQ9). It includes `mpv.exe` with the Viora files, so you do not need to upload the large MPV executable to GitHub.
+- **GitHub project:** download the source ZIP from GitHub for the latest project files. The GitHub source archive does not include MPV or other large third-party runtime executables; get the matching MPV runtime bundle from Telegram or install MPV separately.
+
+Use the Viora release post in Telegram for the full bundle and check its version against the GitHub release before combining files. Do not extract one release over a different version.
+
 ## Quick start on Windows
 
 Requirements:
 
 - Windows 10 or 11
 - Python 3.10 or newer
-- MPV and yt-dlp for online playback
+- MPV and yt-dlp for online playback. MPV is included in the full Telegram bundle; GitHub source downloads do not include it.
 - Internet access for online search, streaming, provider previews, and chart refreshes
 
-1. Download and extract the Viora source ZIP to a folder you can write to.
+1. Download and extract the full Viora ZIP from the official Telegram release post, or download the source ZIP from GitHub and obtain MPV separately as described above. Extract Viora to a folder you can write to.
 2. Install Python dependencies with **python -m pip install -r requirements.txt**.
-3. Install MPV. Viora uses `mpv\mpv.exe` by default; set `MPV_PATH` in `.env` if it is installed elsewhere. Viora launches the configured executable directly, so MPV does not need to be added to PATH.
-4. After installing everything above, Start Viora with START_VIORA.bat or START_VIORA.vbs.
-5. Then open http://127.0.0.1:8888 in your browser.
+3. If using the full bundle, keep the included MPV files together in its `runtime` folder and set `MPV_PATH` in `.env` to the full path of that `mpv.exe`. If using the GitHub source ZIP, install MPV or extract it to `C:\mpv\mpv.exe`. Viora launches the configured executable directly, so MPV does not need to be added to PATH. For online playback, yt-dlp is also required; set `YTDLP_PATH` in `.env` if it is not at `C:\mpv\yt-dlp.exe`.
+4. Start Viora with START_VIORA.bat or START_VIORA.vbs.
+5. Open http://127.0.0.1:8888 in your browser.
 6. In Settings, choose Install Viora or Add to Home Screen where your browser supports it.
 
-Viora binds to the local device by default. It does not require Ollama. Python packages and the source code do not include MPV or yt-dlp media executables.
+Viora binds to the local device by default. It does not require Ollama. The GitHub source code does not include MPV or yt-dlp media executables; the full Telegram bundle includes MPV, and the release post should state whether yt-dlp is bundled too.
 
 ### Build a Windows app folder
 
 On a Windows build computer, install the packages in requirements-build.txt and run build_windows.ps1 in PowerShell. The script creates dist/Viora. It copies MPV and yt-dlp into the app when those executables are available on the build computer; otherwise they must be installed on the target device. Keep the third-party license and notice files with redistributed binaries. The build is an app folder, not a signed installer.
 
-The source ZIP can be recreated on Windows with package_release.ps1. The release process excludes .env, virtual environments, Git data, databases, downloads, logs, cache files, and the personal-use Surgena font.
+The source ZIP can be recreated on Windows with package_release.ps1. The release process excludes .env, virtual environments, Git data, databases, downloads, logs, cache files, third-party runtime executables, and the personal-use Surgena font.
 
 ## Save playlists from other services
 
