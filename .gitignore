@@ -16,3 +16,4 @@ release/
 runtime/
 .build-static-*/
 static/fonts/Surgena-Personal-Use.ttf
+mpv/mpv.exe
