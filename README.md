@@ -32,7 +32,7 @@ Requirements:
 
 1. Download and extract the Viora source ZIP to a folder you can write to.
 2. Install Python dependencies with **python -m pip install -r requirements.txt**.
-3. Install MPV. Viora uses `C:\mpv\mpv.exe` by default; set `MPV_PATH` in `.env` if it is installed elsewhere. Viora launches the configured executable directly, so MPV does not need to be added to PATH.
+3. Install MPV. Viora uses `mpv\mpv.exe` by default; set `MPV_PATH` in `.env` if it is installed elsewhere. Viora launches the configured executable directly, so MPV does not need to be added to PATH.
 4. After installing everything above, Start Viora with START_VIORA.bat or START_VIORA.vbs.
 5. Then open http://127.0.0.1:8888 in your browser.
 6. In Settings, choose Install Viora or Add to Home Screen where your browser supports it.
