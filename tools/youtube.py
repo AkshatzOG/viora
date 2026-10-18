@@ -33,6 +33,11 @@ STREAM_OPTS = {
 
 
 def search_youtube(query, limit=10):
+    # Keep every caller, including natural-language commands, inside offline mode.
+    from core.database import get_db
+    from core.connectivity import network_available
+    if get_db().get_setting("playback_mode", "auto") == "offline" or not network_available():
+        return []
     key = (
         re.sub(r"\s+", " ", str(query or "").strip().lower()),
         int(limit),
@@ -73,6 +78,8 @@ def search_youtube(query, limit=10):
                 or entry.get("uploader"),
                 "channel": entry.get("channel")
                 or entry.get("uploader"),
+                "channel_is_verified": bool(entry.get("channel_is_verified") or entry.get("uploader_is_verified")),
+                "channel_id": entry.get("channel_id") or entry.get("uploader_id"),
                 "duration": entry.get("duration"),
                 "thumbnail": f"https://i.ytimg.com/vi/{entry['id']}/hqdefault.jpg",
                 "watch_url": (
@@ -279,19 +286,18 @@ def discover_current(
     count=5,
     media_type="MUSIC",
 ):
+    topic = re.sub(r"\s+", " ", str(query or "")).strip()
     if media_type == "PODCAST":
-        queries = [
-            "trending podcasts this week",
-            "popular podcasts this week",
-            query,
-        ]
+        queries = ([
+            f"{topic} trending podcast this week" if topic else "trending podcasts this week",
+            f"{topic} popular podcast this week" if topic else "popular podcasts this week",
+        ])
     else:
-        queries = [
-            "trending music this week",
-            "most popular songs this week",
-            "new hit songs this week",
-            query,
-        ]
+        queries = ([
+            f"{topic} trending songs this week official audio" if topic else "trending music this week official audio",
+            f"{topic} top songs this week" if topic else "most popular songs this week",
+            f"{topic} latest popular songs" if topic else "new hit songs this week",
+        ])
 
     candidates = search_parallel(
         queries,
@@ -299,13 +305,20 @@ def discover_current(
         workers=4,
     )
 
+    # A narrow request such as "trending phonk" must not silently become a
+    # general chart query. Keep topic-matching results only; an honest empty
+    # result is safer than playing an unrelated song.
+    if topic:
+        topic_terms = [word for word in re.findall(r"[\w'-]+", topic.casefold()) if len(word) > 2]
+        if topic_terms:
+            candidates = [
+                track for track in candidates
+                if any(term in " ".join(str(track.get(key) or "") for key in ("title", "artist", "channel")).casefold() for term in topic_terms)
+            ]
+
     return rank_tracks(
         candidates,
-        query=(
-            "trending podcasts this week"
-            if media_type == "PODCAST"
-            else "trending music this week"
-        ),
+        query=topic or ("trending podcasts this week" if media_type == "PODCAST" else "trending music this week"),
         limit=count,
         media_type=media_type,
         prefer_tracks=True,

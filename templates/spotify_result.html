@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080a10">
+  <title>Spotify connection · Viora</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px;background:radial-gradient(ellipse at 15% 15%,rgba(48,137,255,.22),transparent 42%),radial-gradient(ellipse at 85% 85%,rgba(255,100,92,.18),transparent 40%),#080a10;color:#f5f5fa;font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}.card{width:min(520px,100%);padding:30px;border:1px solid rgba(255,255,255,.12);border-radius:20px;background:rgba(22,23,30,.88);box-shadow:0 24px 80px rgba(0,0,0,.38)}.mark{width:48px;height:48px;display:grid;place-items:center;margin-bottom:20px;border-radius:15px;background:linear-gradient(140deg,#318aff,#ff706c);font-size:26px}.state{font-size:10px;letter-spacing:.18em;color:{% if ok %}#8fe1b6{% else %}#ffb09e{% endif %};text-transform:uppercase}.card h1{font-size:25px;margin:6px 0 10px}.card p{color:#b8bac7;margin:0 0 20px}.button{display:inline-block;padding:11px 15px;border-radius:10px;background:#fff;color:#121318;text-decoration:none;font-weight:700}.foot{font-size:11px;color:#888b99;margin-top:18px}
+  </style>
+</head>
+<body>
+  <main class="card"><div class="mark">♫</div><div class="state">{% if ok %}Connected{% else %}Needs attention{% endif %}</div><h1>Viora + Spotify</h1><p>{{ message }}</p><a class="button" href="/?spotify={% if ok %}connected{% else %}retry{% endif %}">Return to Viora</a><div class="foot">Spotify playlist details are used only to find playable matches in Viora. Audio is not copied from Spotify.</div></main>
+</body>
+</html>

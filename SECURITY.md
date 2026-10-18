@@ -1,28 +1,13 @@
-# Security Policy
+# Security policy
 
-## Reporting a Vulnerability
+## Scope
 
-If you discover a security vulnerability in Local Music Agent, please do not
-open a public issue with sensitive details.
+Viora is designed to run on the user's own Windows machine. The default Flask bind is 127.0.0.1, so the web interface is local-only unless configuration is changed.
 
-Instead, use GitHub's private vulnerability reporting feature or contact the
-repository maintainer privately.
+## Local data
 
-Please include:
+Personalization, search history, playback history, playlists, theme preference, and download metadata are stored in SQLite under the configured local data directory. Keep .env, data/, downloads/, .runtime.json, virtual environments, and generated logs out of release archives and source control.
 
-- A description of the vulnerability
-- Steps to reproduce it
-- Potential impact
-- Any relevant logs or screenshots
-- A suggested fix, if available
+## Reporting
 
-## Supported Versions
-
-The latest version on the `main` branch is currently supported.
-
-Older versions may not receive security fixes.
-
-## Responsible Disclosure
-
-Please allow reasonable time for the issue to be investigated and fixed
-before publicly disclosing technical details.
+For a security issue, avoid publishing sensitive details in a public issue. Use the repository's private vulnerability-reporting mechanism when available.

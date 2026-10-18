@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from core.database import get_db
+
 
 @dataclass
 class MusicMemory:
@@ -11,9 +15,9 @@ class MusicMemory:
     conversation: list[dict] = field(default_factory=list)
 
     def remember_song(self, track):
-        self.current_song = track
-        self.current_artist = track.get("artist")
-        title = track.get("title")
+        self.current_song = dict(track or {})
+        self.current_artist = track.get("artist") or track.get("channel") if track else None
+        title = track.get("title") if track else None
         if title:
             self.recently_played = (self.recently_played + [title])[-20:]
 
@@ -29,6 +33,8 @@ class MusicMemory:
         self.conversation = (self.conversation + [{"role": role, "content": content}])[-20:]
 
     def context(self):
+        db = get_db()
+        onboarding = db.get_onboarding()
         return {
             "current_song": self.current_song,
             "current_artist": self.current_artist,
@@ -37,4 +43,5 @@ class MusicMemory:
             "active_mood": self.active_mood,
             "recently_played": self.recently_played[-10:],
             "recent_conversation": self.conversation[-10:],
+            "taste": onboarding,
         }

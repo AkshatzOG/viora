@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <defs>
+    <linearGradient id="viora-agent" x1="10" y1="9" x2="84" y2="89" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#54D9FF"/>
+      <stop offset=".48" stop-color="#557CFF"/>
+      <stop offset="1" stop-color="#FF765F"/>
+    </linearGradient>
+    <linearGradient id="viora-wave" x1="21" y1="53" x2="77" y2="43" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73E9FF"/>
+      <stop offset=".55" stop-color="#A7A4FF"/>
+      <stop offset="1" stop-color="#FFB17C"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <path d="M48 5.5 82.5 25v39L48 84.5 13.5 64V25L48 5.5Z" fill="url(#viora-agent)" fill-opacity=".16" stroke="url(#viora-agent)" stroke-opacity=".68" stroke-width="1.5"/>
+  <path d="M27 26.5 44.6 67c1.3 3 5.5 3 6.8 0L69 26.5" stroke="url(#viora-agent)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M21.5 49c6.5-8.5 11.5 8.5 18 0s11.5-8.5 18 0 11.5 8.5 18 0" stroke="url(#viora-wave)" stroke-width="2.3" stroke-linecap="round"/>
+  <circle cx="25" cy="19" r="2.2" fill="#9AEAFF"/>
+  <circle cx="73" cy="73" r="2.4" fill="#FFC18F"/>
+  <path d="m71 17 1.6 4.4L77 23l-4.4 1.6L71 29l-1.6-4.4L65 23l4.4-1.6L71 17Z" fill="#FFF0C9"/>
+</svg>

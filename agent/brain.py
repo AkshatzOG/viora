@@ -1,395 +1,209 @@
+from __future__ import annotations
+
 import json
 import re
-import requests
 
-from config import OLLAMA_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT
 from agent.memory import MusicMemory
 
 
-SYSTEM_PROMPT = """
-You are Local Music Agent, a conversational music and podcast assistant.
-
-Return ONLY valid JSON:
-{
-  "action": "PLAY|QUEUE|SEARCH|PAUSE|RESUME|NEXT|PREVIOUS|CLEAR_FILTER|CLOSE",
-  "media_type": "MUSIC|PODCAST",
-  "query": "string",
-  "count": 1,
-  "scope": "once|session",
-  "genre": null,
-  "artist": null,
-  "language": null,
-  "mood": null,
-  "variant": null,
-  "needs_current_info": false,
-  "reason": "short explanation"
+CONTROL_EXACT = {
+    "pause": "PAUSE", "pause music": "PAUSE",
+    "resume": "RESUME", "resume music": "RESUME", "continue": "RESUME",
+    "next": "NEXT", "skip": "NEXT", "skip song": "NEXT", "next song": "NEXT", "play next": "NEXT",
+    "previous": "PREVIOUS", "prev": "PREVIOUS", "back": "PREVIOUS", "go back": "PREVIOUS", "previous song": "PREVIOUS",
+    "clear filter": "CLEAR_FILTER", "clear filters": "CLEAR_FILTER", "reset filter": "CLEAR_FILTER",
+    "clear queue": "CLEAR_QUEUE", "clear the queue": "CLEAR_QUEUE", "empty queue": "CLEAR_QUEUE",
+    "shuffle": "SHUFFLE", "shuffle queue": "SHUFFLE",
+    "close": "CLOSE", "close agent": "CLOSE", "quit": "CLOSE", "quit agent": "CLOSE", "exit": "CLOSE", "exit agent": "CLOSE", "stop agent": "CLOSE",
 }
 
-Rules:
-- Explicit podcast/episode/talk/interview => PODCAST.
-- queue/add/up next => QUEUE, never PLAY.
-- play => PLAY.
-- search/find/list/show => SEARCH, never playback.
-- close/quit/exit/stop agent => CLOSE.
-- pause/resume/next/previous => control actions.
-- similar/like this/more like this uses the current playing song as context.
-- trending/latest/current/this week/right now => needs_current_info=true.
-- Japanese/Korean/Hindi/etc. are languages, not genres.
-- "play something chill" => mood="chill", query="chill music".
-- Do not invent current chart facts.
-- count must be 1..20.
-"""
+MOODS = ("chill", "relaxing", "relax", "sad", "hype", "energetic", "workout", "calm", "focus", "happy", "romantic", "party", "late night", "feel good", "rainy")
+MEDIA_PODCAST = re.compile(r"\b(podcast|podcasts|episode|episodes|talk show|interview)\b", re.I)
+
+
+def _base(text: str, action="PLAY", **extra):
+    return {
+        "action": action,
+        "media_type": "PODCAST" if MEDIA_PODCAST.search(text) else "MUSIC",
+        "query": text,
+        "count": 1,
+        "scope": "once",
+        "genre": None,
+        "artist": None,
+        "language": None,
+        "mood": None,
+        "variant": None,
+        "playlist_name": None,
+        "needs_current_info": False,
+        "reason": "local parser",
+        **extra,
+    }
+
+
+def _extract_count(text: str) -> int:
+    m = re.search(r"\b(\d{1,2})\b", text)
+    return max(1, min(int(m.group(1)), 20)) if m else 1
+
+
+def _strip_command(text: str) -> str:
+    s = text.strip()
+    patterns = [
+        r"^(please\s+)?(play|queue|add|search|find|look up|show|list)\s+",
+        r"^(please\s+)?(give me|give us|suggest|recommend)\s+",
+    ]
+    for p in patterns:
+        s = re.sub(p, "", s, flags=re.I)
+    return re.sub(r"\s+", " ", s).strip(" .")
+
+
+def _strip_trend_words(text: str) -> str:
+    """Keep the requested music subject; discard the command and time window."""
+    value = str(text or "").strip()
+    value = re.sub(r"^(?:please\s+)?(?:play|queue|find|search|show|recommend|suggest)\s+", "", value, flags=re.I)
+    value = re.sub(r"\b(?:top|trending|popular|viral|chart(?:s)?|latest|new|this|week|month|today|tonight|currently|the|of|in|for|me|music|songs?|tracks?)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(?:today|tonight|right now|currently|this week|this month|last week)\b", " ", value, flags=re.I)
+    return re.sub(r"\s+", " ", value).strip(" .,!?:;")
 
 
 class MusicBrain:
     def __init__(self):
         self.memory = MusicMemory()
 
-    def _base(self, text, action="PLAY", **extra):
-        return {
-            "action": action,
-            "media_type": "MUSIC",
-            "query": text,
-            "count": 1,
-            "scope": "once",
-            "genre": None,
-            "artist": None,
-            "language": None,
-            "mood": None,
-            "variant": None,
-            "needs_current_info": False,
-            "reason": "fast parser",
-            **extra,
-        }
-
-    def _local_control(self, text):
-        lower = text.strip().lower()
-
-        mapping = {
-            "pause": "PAUSE",
-            "pause music": "PAUSE",
-            "resume": "RESUME",
-            "resume music": "RESUME",
-            "continue": "RESUME",
-            "next": "NEXT",
-            "skip": "NEXT",
-            "next song": "NEXT",
-            "skip song": "NEXT",
-            "previous": "PREVIOUS",
-            "back": "PREVIOUS",
-            "go back": "PREVIOUS",
-            "previous song": "PREVIOUS",
-            "clear filter": "CLEAR_FILTER",
-            "clear queue": "CLEAR_QUEUE",
-            "clear the queue": "CLEAR_QUEUE",
-            "empty queue": "CLEAR_QUEUE",
-            "empty the queue": "CLEAR_QUEUE",
-            "clear filters": "CLEAR_FILTER",
-            "reset filter": "CLEAR_FILTER",
-            "remove filter": "CLEAR_FILTER",
-            "close": "CLOSE",
-            "close agent": "CLOSE",
-            "quit": "CLOSE",
-            "quit agent": "CLOSE",
-            "exit": "CLOSE",
-            "exit agent": "CLOSE",
-            "stop agent": "CLOSE",
-        }
-
-        action = mapping.get(lower)
-        if action:
-            return self._base(text, action=action, reason="local control")
-
+    def _local_control(self, text: str):
+        lower = re.sub(r"\s+", " ", text.strip().lower())
+        if lower in CONTROL_EXACT:
+            return _base(text, action=CONTROL_EXACT[lower], reason="local control")
+        # Conversational controls.
+        if re.fullmatch(r"(please )?skip( this)?( song|track)?", lower):
+            return _base(text, action="NEXT", reason="local control")
+        if re.fullmatch(r"(go )?back( one( song|track))?", lower):
+            return _base(text, action="PREVIOUS", reason="local control")
         return None
 
-    def _fast_parse(self, text):
+    def _fast_parse(self, text: str):
         control = self._local_control(text)
         if control:
             return control
-
         lower = text.lower().strip()
+        count = _extract_count(lower)
 
-        count_match = re.search(r"\b(\d+)\b", lower)
-        count = max(1, min(int(count_match.group(1)), 20)) if count_match else 1
+        # Explicit playlist/library commands.
+        m = re.match(r"^(?:play|open|show)\s+(?:my\s+)?playlist\s+(.+)$", lower)
+        if m:
+            return _base(text, action="PLAYLIST", playlist_name=m.group(1).strip(), reason="playlist command")
+        m = re.match(r"^(?:queue|add)\s+(?:my\s+)?playlist\s+(.+)$", lower)
+        if m:
+            return _base(text, action="QUEUE_PLAYLIST", playlist_name=m.group(1).strip(), reason="playlist command")
+        if re.fullmatch(r"(?:play|open)\s+(?:my\s+)?favorites", lower):
+            return _base(text, action="FAVORITES", count=count, reason="favorites command")
+        if re.fullmatch(r"(?:play|show)\s+(?:my\s+)?history|(?:show)\s+recent(?:ly played)?", lower):
+            return _base(text, action="HISTORY", count=count, reason="history command")
+        if re.fullmatch(r"(?:play|search)\s+(?:my\s+)?downloads|(?:show|open)\s+(?:my\s+)?library", lower):
+            return _base(text, action="LIBRARY", count=count, reason="library command")
 
-        if re.search(r"\b(queue|add|up next)\b", lower):
+        # Explicit favorite/download actions for the current track.
+        if re.fullmatch(r"(?:favorite|favourite|like)\s+(?:this|current|song|track)", lower):
+            return _base(text, action="FAVORITE_CURRENT", reason="favorite current")
+        if re.fullmatch(r"un(?:favorite|favourite|like)\s+(?:this|current|song|track)", lower):
+            return _base(text, action="UNFAVORITE_CURRENT", reason="favorite current")
+        if re.fullmatch(r"download\s+(?:this|current|song|track)", lower):
+            return _base(text, action="DOWNLOAD_CURRENT", reason="download current")
+        m = re.match(r"^(?:add|save)\s+(?:this|current|song|track)\s+to\s+(?:my\s+)?(?:playlist\s+)?(.+)$", lower)
+        if m:
+            return _base(text, action="ADD_CURRENT_PLAYLIST", playlist_name=m.group(1).strip(), reason="playlist current")
+
+        # Similar/recommendation requests must be their own action, never a YouTube query literal.
+        similar = any(x in lower for x in (
+            "similar to this", "something similar", "play something similar", "more like this",
+            "like this", "similar to it", "something like this", "songs like this", "songs similar to this",
+        ))
+        if similar:
+            current = self.memory.current_song
+            if current:
+                return _base(text, action="SIMILAR", query=str(current.get("title") or ""), count=max(1, count), reason="similar request")
+            return _base(text, action="SIMILAR", query="", count=max(1, count), reason="similar request without current")
+
+        rec = any(x in lower for x in (
+            "recommend", "suggest", "something i would like", "something i'll like", "for me", "for you",
+            "surprise me", "what should i listen", "give me something", "play something",
+        ))
+        current_request = any(x in lower for x in ("trending", "this week", "this month", "right now", "latest", "popular now", "currently", "new releases"))
+        if current_request:
+            topic = _strip_trend_words(text)
+            explicit_count = bool(re.search(r"\b\d{1,2}\b", lower))
+            return _base(
+                text,
+                action="TRENDING",
+                query=topic,
+                count=count if explicit_count else 10,
+                needs_current_info=True,
+                reason="current discovery",
+            )
+        if rec:
+            mood = next((m for m in MOODS if m in lower), None)
+            cleaned = _strip_command(text)
+            if cleaned.lower() in {"something", "something new", "music", "some music", "songs", "what should i listen to", "what should i listen to?", "what should i play", "for you"}:
+                cleaned = ""
+            return _base(text, action="RECOMMEND", query=cleaned, count=count, mood=mood, reason="recommendation request")
+
+        # Search intent should remain search, not playback.
+        if re.match(r"^(search|find|look up|show me|list)\b", lower):
+            media = "PODCAST" if MEDIA_PODCAST.search(lower) else "MUSIC"
+            query = _strip_command(text)
+            return _base(text, action="SEARCH", query=query or ("podcasts" if media == "PODCAST" else "music"), count=count, media_type=media, reason="search request")
+
+        if re.search(r"\b(queue|add)\b", lower):
             action = "QUEUE"
-        elif re.search(r"\b(search|find|look up|show me|list)\b", lower):
-            action = "SEARCH"
         else:
             action = "PLAY"
 
-        media_type = (
-            "PODCAST"
-            if re.search(
-                r"\b(podcast|podcasts|episode|episodes|talk show|interview)\b",
-                lower,
-            )
-            else "MUSIC"
-        )
+        media = "PODCAST" if MEDIA_PODCAST.search(lower) else "MUSIC"
+        query = _strip_command(text)
+        query = re.sub(r"\b(\d{1,2})\b", " ", query)
+        query = re.sub(r"\s+", " ", query).strip(" .")
 
-        current = self.memory.current_song
-        current_title = current.get("title") if current else None
-        current_artist = self.memory.current_artist
-
-        similar = any(
-            phrase in lower
-            for phrase in (
-                "similar to this",
-                "something similar",
-                "play something similar",
-                "similar",
-                "like this",
-                "more like this",
-                "similar to it",
-                "something like this",
-                "songs similar to this",
-                "songs like this",
-            )
-        )
-
-        if similar and current_title:
-            return self._base(
-                text,
-                action=action,
-                query=f"similar songs to {current_title}",
-                count=count,
-                artist=current_artist,
-                reason="similar request",
-            )
-
-        current_request = any(
-            phrase in lower
-            for phrase in (
-                "trending",
-                "this week",
-                "this month",
-                "right now",
-                "latest",
-                "popular now",
-                "currently",
-            )
-        )
-
-        if current_request:
-            return self._base(
-                text,
-                action=action,
-                query=(
-                    "trending podcasts this week"
-                    if media_type == "PODCAST"
-                    else "trending music this week"
-                ),
-                count=count,
-                media_type=media_type,
-                needs_current_info=True,
-                reason="current discovery request",
-            )
-
-        if media_type == "PODCAST":
-            cleaned = lower
-            cleaned = re.sub(
-                r"\b(play|queue|add|search|find|podcast|podcasts|episode|episodes|talk show|interview)\b",
-                " ",
-                cleaned,
-            )
-            cleaned = re.sub(r"\b\d+\b", " ", cleaned)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-            cleaned = re.sub(r"^(a|an|the)\s+", "", cleaned).strip()
-            if cleaned.startswith("by "):
-                cleaned = cleaned[3:].strip()
-
-            return self._base(
-                text,
-                action=action,
-                query=cleaned or "podcast",
-                count=count,
-                media_type="PODCAST",
-                reason="fast podcast parser",
-            )
-
-        mood = None
-        for candidate in (
-            "chill",
-            "relaxing",
-            "sad",
-            "hype",
-            "energetic",
-            "workout",
-            "calm",
-            "focus",
-            "happy",
-            "romantic",
-        ):
-            if re.search(rf"\b{re.escape(candidate)}\b", lower):
-                mood = candidate
-                break
-
-        cleaned = re.sub(
-            r"\b(play|queue|add|search|find|some|something|songs?|music|tracks?)\b",
-            " ",
-            lower,
-        )
-        cleaned = re.sub(r"\b\d+\b", " ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-        if mood and (not cleaned or cleaned == mood):
+        mood = next((m for m in MOODS if re.search(rf"\b{re.escape(m)}\b", lower)), None)
+        if query in {"", "something", "some", "music", "songs"} and mood:
             query = f"{mood} music"
-        elif cleaned:
-            query = cleaned
-        else:
+        if not query:
             return None
 
-        # Preserve ordinary song/title requests on the fast path.
-        if action in {"PLAY", "QUEUE"} and (" by " in lower or not mood):
-            return self._base(
-                text,
-                action=action,
-                query=query,
-                count=count,
-                mood=mood,
-                reason="fast music parser",
-            )
+        # Pull common variant words into a structured field while keeping the query intact enough for search.
+        variant = None
+        for v in ("slowed", "reverb", "sped up", "nightcore", "remix", "acoustic", "8d", "live"):
+            if re.search(rf"\b{re.escape(v)}\b", lower):
+                variant = v
+                break
 
-        if mood:
-            return self._base(
-                text,
-                action=action,
-                query=query,
-                count=count,
-                mood=mood,
-                reason="fast mood parser",
-            )
+        # Simple artist extraction: "song by artist".
+        artist = None
+        m = re.match(r"(.+?)\s+by\s+(.+)$", query, flags=re.I)
+        if m and m.group(2).strip():
+            query = m.group(1).strip()
+            artist = m.group(2).strip()
 
-        return None
-
-    def _fallback(self, text):
-        fast = self._fast_parse(text)
-        if fast:
-            return fast
-
-        lower = text.lower()
-        current = self.memory.current_song
-        current_title = current.get("title") if current else None
-
-        query = text
-        if current_title and any(
-            p in lower for p in ("similar", "like this", "more like")
-        ):
-            query = f"similar songs to {current_title}"
-
-        action = (
-            "QUEUE"
-            if any(w in lower for w in ("queue", "add", "up next"))
-            else "PLAY"
-        )
-
-        if any(w in lower for w in ("search", "find", "look up")):
-            action = "SEARCH"
-
-        return self._base(
+        return _base(
             text,
             action=action,
             query=query,
-            reason="fallback parser",
+            count=count,
+            media_type=media,
+            mood=mood,
+            artist=artist,
+            variant=variant,
+            reason="fast music parser" if media == "MUSIC" else "fast podcast parser",
         )
-
-    def _call_ollama(self, user_text):
-        prompt = (
-            f"Current context:\n"
-            f"{json.dumps(self.memory.context(), ensure_ascii=False)}\n\n"
-            f"Recent conversation:\n"
-            f"{json.dumps(self.memory.conversation[-10:], ensure_ascii=False)}\n\n"
-            f"User:\n{user_text}"
-        )
-
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "system": SYSTEM_PROMPT,
-                "prompt": prompt,
-                "format": "json",
-                "stream": False,
-                "keep_alive": -1,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 220,
-                    "num_ctx": 2048,
-                },
-            },
-            timeout=OLLAMA_TIMEOUT,
-        )
-        response.raise_for_status()
-
-        return json.loads(response.json().get("response", "{}"))
 
     def understand(self, user_text):
-        text = user_text.strip()
-
+        text = (user_text or "").strip()
         if not text:
-            return self._fallback(text)
-
-        fast = self._fast_parse(text)
-
-        if fast:
-            # Fast parser owns deterministic commands and obvious requests.
-            # Ollama remains available for genuinely ambiguous conversation.
-            result = fast
-        else:
-            try:
-                result = self._call_ollama(text)
-            except Exception as exc:
-                print("[brain] Ollama unavailable/failed:", repr(exc))
-                result = self._fallback(text)
-
-        defaults = self._fallback(text)
-        merged = {**defaults, **(result if isinstance(result, dict) else {})}
-
-        merged["action"] = str(merged.get("action", "PLAY")).upper()
-
-        allowed = {
-            "PLAY",
-            "QUEUE",
-            "SEARCH",
-            "PAUSE",
-            "RESUME",
-            "NEXT",
-            "PREVIOUS",
-            "CLEAR_FILTER",
-            "CLEAR_QUEUE",
-            "CLOSE",
-        }
-
-        if merged["action"] not in allowed:
-            merged["action"] = defaults["action"]
-
-        merged["media_type"] = str(
-            merged.get("media_type", "MUSIC")
-        ).upper()
-
-        if merged["media_type"] not in {"MUSIC", "PODCAST"}:
-            merged["media_type"] = "MUSIC"
-
-        merged["scope"] = str(merged.get("scope", "once")).lower()
-
-        if merged["scope"] not in {"once", "session"}:
-            merged["scope"] = "once"
-
-        try:
-            merged["count"] = max(
-                1,
-                min(int(merged.get("count", 1)), 20),
-            )
-        except (TypeError, ValueError):
-            merged["count"] = 1
-
-        merged["needs_current_info"] = bool(
-            merged.get("needs_current_info", False)
-        )
-
-        return merged
+            return _base("", action="SEARCH", query="music", reason="empty request")
+        parsed = self._fast_parse(text)
+        if parsed:
+            return parsed
+        # Deliberately do not call a remote/local text model in v15.0.
+        # Unknown natural-language requests are still routed as best-effort searches.
+        return _base(text, action="SEARCH", query=text, reason="safe fallback")
 
     def remember_song(self, track):
         self.memory.remember_song(track)
@@ -402,7 +216,4 @@ class MusicBrain:
 
     def remember(self, user_text, result):
         self.memory.add_message("user", user_text)
-        self.memory.add_message(
-            "assistant",
-            json.dumps(result, ensure_ascii=False),
-        )
+        self.memory.add_message("assistant", json.dumps(result, ensure_ascii=False))

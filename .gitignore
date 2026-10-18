@@ -3,4 +3,16 @@ __pycache__/
 *.pyc
 .env
 logs/*.log
+.runtime.json
+*.db
+*.sqlite
+*.sqlite3
+data/
+downloads/
 .music_cache.json
+dist/
+build/
+release/
+runtime/
+.build-static-*/
+static/fonts/Surgena-Personal-Use.ttf

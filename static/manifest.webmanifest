@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "Viora Music",
+  "short_name": "Viora",
+  "description": "A personal music discovery and listening space.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080b18",
+  "theme_color": "#101a3c",
+  "icons": [
+    { "src": "/static/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

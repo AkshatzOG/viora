@@ -2,6 +2,47 @@ import re
 from difflib import SequenceMatcher
 
 
+OFFICIAL_TITLE_MARKERS = (
+    "official audio", "official music video", "official video",
+    "provided to youtube by", "licensed to youtube by",
+)
+
+
+def source_category(track):
+    """Prefer platform-level verification; title/channel text alone stays lower confidence."""
+    track = track or {}
+    if track.get("channel_is_verified") or track.get("uploader_is_verified") or track.get("verified"):
+        return "official"
+    channel = normalize_text(track.get("channel") or track.get("artist") or track.get("uploader") or "")
+    # YouTube's generated Topic channels and widely recognizable label/Vevo
+    # channels are stronger signals than a title that merely says “official”.
+    trusted_channels = (
+        "vevo", "t series", "zee music company", "sony music india",
+        "saregama music", "tips official", "universal music group",
+        "warner records", "atlantic records", "republic records",
+        "sony music entertainment", "warner music", "universal music",
+    )
+    if channel.endswith(" topic") or any(name in channel for name in trusted_channels):
+        return "likely_official"
+    title = normalize_text(track.get("title") or "")
+    if any(marker in title for marker in ("provided to youtube by", "licensed to youtube by")):
+        return "official"
+    if any(marker in title for marker in ("official audio", "official music video", "official video")) or channel.endswith(" official") or channel.startswith("official "):
+        return "likely_official"
+    return "community"
+
+
+def attach_source_category(track):
+    result = dict(track or {})
+    result["source_category"] = source_category(result)
+    result["source_badge"] = {
+        "official": "Verified source metadata",
+        "likely_official": "Artist / label source signal",
+        "community": "Community upload",
+    }[result["source_category"]]
+    return result
+
+
 CONTAINER_PHRASES = (
     "playlist", "mix", "radio", "compilation", "collection", "nonstop",
     "best of", "top 10", "top 20", "top 50", "top 100",
@@ -35,6 +76,11 @@ GOOD_PHRASES = (
     "official music video",
     "official video",
     "audio",
+)
+
+UNREQUESTED_DERIVATIVES = (
+    "remix", "mashup", "slowed", "slowed + reverb", "sped up",
+    "nightcore", "fan edit", "edit audio", "8d audio", "bass boosted",
 )
 
 
@@ -190,6 +236,14 @@ def exact_song_score(
     elif "audio" in normalized:
         score += 18
 
+    category = source_category(track)
+    score += 45 if category == "official" else 12 if category == "likely_official" else 0
+
+    requested_variant = normalize_text(f"{song_name} {variant or ''}")
+    if not any(term in requested_variant for term in UNREQUESTED_DERIVATIVES):
+        if any(term in normalized for term in UNREQUESTED_DERIVATIVES):
+            score -= 95
+
     # Strong penalties. A lyrics/mashup result can contain every requested
     # token, but it is still not the clean recording the user asked for.
     if "lyrics" in normalized or "lyric video" in normalized:
@@ -250,24 +304,29 @@ def find_best_exact_song(
 
 def remove_duplicates(tracks):
     seen_ids = set()
-    seen_titles = set()
+    seen_performances = set()
     result = []
 
     for track in tracks or []:
         vid = track.get("id")
         title = clean_title(track.get("title", ""))
+        artist = normalize_text(track.get("artist") or track.get("channel") or track.get("uploader") or "")
 
         if vid and vid in seen_ids:
             continue
 
-        if title and title in seen_titles:
+        # Keep same-title recordings from different performers/channels. A
+        # title-only dedupe used to discard the canonical source before source
+        # ranking even ran, which hid the better result from later searches.
+        performance = (title, artist) if title and artist else None
+        if performance and performance in seen_performances:
             continue
 
         if vid:
             seen_ids.add(vid)
 
-        if title:
-            seen_titles.add(title)
+        if performance:
+            seen_performances.add(performance)
 
         result.append(track)
 
@@ -288,8 +347,16 @@ def rank_tracks(
     scored = []
     q = normalize_text(query)
     artist_norm = normalize_text(artist) if artist else ""
+    query_tokens = set(q.split()) - {
+        "official", "audio", "video", "music", "song", "songs", "track", "tracks",
+        "the", "by", "play", "find", "search", "recommend", "recommendation",
+        "recommendations", "me", "some", "please", "for", "a", "an", "this",
+        "week", "today", "current", "trending", "popular", "new", "best", "top",
+        "listen", "show", "want", "i", "like", "of", "from", "in", "my", "your", "on", "to",
+    }
 
     for index, track in enumerate(tracks):
+        track = attach_source_category(track)
         title = track.get("title", "")
         text = normalize_text(title)
         ctype = content_type(title)
@@ -314,6 +381,11 @@ def rank_tracks(
 
             if prefer_tracks and is_bad_result(title):
                 score -= 120
+            # Keep the canonical recording ahead of user-made variants unless
+            # the query explicitly asks for that treatment.
+            if prefer_tracks and not any(term in q for term in UNREQUESTED_DERIVATIVES):
+                if any(term in text for term in UNREQUESTED_DERIVATIVES):
+                    score -= 95
 
             if any(p in text for p in GOOD_PHRASES):
                 score += 12
@@ -322,25 +394,37 @@ def rank_tracks(
             v = normalize_text(variant)
             score += 80 if v in text else -35
 
+        creator_text = normalize_text(" ".join(str(track.get(k) or "") for k in ("artist", "channel", "uploader")))
         if artist_norm:
-            if artist_norm in text:
+            if artist_norm in creator_text or artist_norm in text:
                 score += 35
             else:
-                score -= 20
+                score -= 110
 
         if q:
-            score += SequenceMatcher(
-                None,
-                q,
-                clean_title(title),
-            ).ratio() * 8
+            cleaned = clean_title(title)
+            searchable = normalize_text(cleaned + " " + creator_text)
+            score += SequenceMatcher(None, q, cleaned).ratio() * 8
+            if prefer_tracks and query_tokens:
+                title_tokens = set(cleaned.split())
+                source_tokens = set(creator_text.split())
+                title_coverage = len(query_tokens & title_tokens) / len(query_tokens)
+                source_coverage = len(query_tokens & source_tokens) / len(query_tokens)
+                combined_coverage = len(query_tokens & set(searchable.split())) / len(query_tokens)
+                score += title_coverage * 48 + source_coverage * 30 + combined_coverage * 20
+                if combined_coverage < 0.35:
+                    score -= 95
+
+        # Keep the requested sound/song relevant ahead of channel-level
+        # confidence. A verified channel is useful evidence, but it cannot
+        # make an unrelated result a good match.
+        category = track.get("source_category")
+        score += 16 if category == "official" else 8 if category == "likely_official" else 0
 
         scored.append((score, track))
 
-    scored.sort(
-        key=lambda item: item[0],
-        reverse=True,
-    )
+    source_priority = {"official": 2, "likely_official": 1, "community": 0}
+    scored.sort(key=lambda item: (item[0], source_priority.get(item[1].get("source_category"), 0)), reverse=True)
 
     return [
         track

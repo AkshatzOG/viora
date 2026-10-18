@@ -1,0 +1,7 @@
+Viora 15.8.4 playlist-player and MPV fix
+
+1. Extract this archive into your existing Viora project folder and replace matching files.
+2. Restart Viora.
+3. Refresh the browser/PWA after restart so the v15.8.4 cache is installed.
+
+This patch contains only the changed project files, not the full Viora release.

@@ -1,6 +1,8 @@
 import threading
 import time
+import shutil
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import soundcard as sc
@@ -241,15 +243,34 @@ class MusicPlayer:
         self._upcoming_tracks = []
         self._closed = False
         self._ignore_end_events = 0
+        self._preview_snapshot = None
+        self._preview_timer = None
+        self._is_preview = False
+        self._last_error = None
         self.audio_analyzer = AudioAnalyzer()
-        self._start_mpv()
+        try:
+            if not self._mpv_available():
+                raise FileNotFoundError(f"MPV was not found at {MPV_PATH!r} or on PATH")
+            self._start_mpv()
+        except Exception as exc:
+            self._last_error = str(exc)
+            print("[player] MPV unavailable at startup:", repr(exc))
+            self.mpv = None
+
+    @staticmethod
+    def _mpv_available():
+        candidate = str(MPV_PATH or "").strip()
+        return bool(candidate and (Path(candidate).is_file() or shutil.which(candidate)))
 
     def _start_mpv(self):
+        if not self._mpv_available():
+            raise FileNotFoundError(f"MPV was not found at {MPV_PATH!r} or on PATH")
         print("[player] Starting mpv...")
         print("[player] mpv:", MPV_PATH)
         print("[player] yt-dlp:", YTDLP_PATH)
 
         self.mpv = MPV(
+            mpv_location=str(MPV_PATH),
             vid="no",
             idle="yes",
             ytdl_format="bestaudio/best",
@@ -260,6 +281,7 @@ class MusicPlayer:
         self.mpv.bind_event("end-file", self._on_finished)
 
         self._closed = False
+        self._last_error = None
         print("[player] mpv started successfully.")
 
     def _restart_mpv(self):
@@ -272,7 +294,7 @@ class MusicPlayer:
         self._start_mpv()
 
         if self.current_track and not self._closed:
-            url = self.current_track.get("stream_url") or self.current_track.get("watch_url")
+            url = self._play_url(self.current_track)
             if url:
                 self._ignore_end_events += 1
                 try:
@@ -285,9 +307,11 @@ class MusicPlayer:
     def _command(self, *args):
         with self._lock:
             try:
+                if self.mpv is None:
+                    self._start_mpv()
                 return self.mpv.command(*args)
             except (BrokenPipeError, OSError):
-                if self._closed:
+                if self._closed or not self._mpv_available():
                     raise
                 self._restart_mpv()
                 return self.mpv.command(*args)
@@ -303,6 +327,18 @@ class MusicPlayer:
     def _identity(track):
         track = track or {}
         return track.get("id") or track.get("watch_url") or track.get("title")
+
+    @staticmethod
+    def _play_url(track):
+        track = track or {}
+        local_path = track.get("local_path")
+        if local_path:
+            try:
+                if Path(local_path).is_file():
+                    return str(Path(local_path))
+            except (OSError, TypeError, ValueError):
+                pass
+        return track.get("stream_url") or track.get("watch_url") or local_path
 
     def _remember_history(self, track):
         identity = self._identity(track)
@@ -321,7 +357,7 @@ class MusicPlayer:
         if not track:
             return False
 
-        url = track.get("stream_url") or track.get("watch_url")
+        url = self._play_url(track)
         if not url:
             return False
 
@@ -329,6 +365,7 @@ class MusicPlayer:
         self.now_playing = track.get("title") or "Unknown"
         self._paused = False
         self._playing = True
+        self._last_error = None
 
         # loadfile replace causes an end-file(stop) event for the previous
         # MPV item. That event is not a real end of the application track.
@@ -336,10 +373,13 @@ class MusicPlayer:
             self._ignore_end_events += 1
         try:
             self._command("loadfile", url, "replace")
-        except Exception:
+        except Exception as exc:
             if suppress_end:
                 self._ignore_end_events = max(0, self._ignore_end_events - 1)
             self._playing = False
+            self._last_error = str(exc)
+            self.current_track = None
+            self.now_playing = None
             raise
 
         return True
@@ -385,8 +425,26 @@ class MusicPlayer:
                 print("[player] Ignored transition end-file:", event)
                 return
 
-            if reason in {"error", "quit", "stop"}:
+            if self._is_preview:
                 self._playing = False
+                return
+
+            if reason in {"error", "quit", "stop"}:
+                if reason == "error" and self.current_track and self.current_track.get("stream_url") and self.current_track.get("watch_url"):
+                    fallback_track = dict(self.current_track)
+                    fallback_track.pop("stream_url", None)
+                    print("[player] Direct stream failed; retrying with the source URL:", fallback_track.get("title", "Unknown"))
+                    try:
+                        if self._load_current(fallback_track, suppress_end=True):
+                            return
+                    except Exception as exc:
+                        print("[player] Source URL fallback failed:", repr(exc))
+                self._playing = False
+                if reason == "error":
+                    detail = (event or {}).get("file_error") or (event or {}).get("error") if isinstance(event, dict) else None
+                    self._last_error = str(detail or "MPV could not read or play this media stream.")
+                    self.current_track = None
+                    self.now_playing = None
                 print("[player] Track stopped:", event)
                 return
 
@@ -419,6 +477,7 @@ class MusicPlayer:
             return False
 
         with self._lock:
+            self._cancel_preview()
             old = self.current_track
             if remember and old and self._identity(old) != self._identity(track):
                 self._remember_history(old)
@@ -430,8 +489,66 @@ class MusicPlayer:
             try:
                 return self._load_current(track)
             except Exception as exc:
+                self._last_error = str(exc)
                 print("[player] Play failed:", repr(exc))
                 return False
+
+    def _cancel_preview(self):
+        if self._preview_timer:
+            self._preview_timer.cancel()
+            self._preview_timer = None
+        self._preview_snapshot = None
+        self._is_preview = False
+
+    def preview(self, track, seconds=20):
+        """Audition a track briefly, then restore the previous playback state."""
+        if not track:
+            return False
+        with self._lock:
+            self._cancel_preview()
+            snapshot = None
+            if self.current_track:
+                snapshot = {
+                    "track": dict(self.current_track),
+                    "position": float(self._get("time-pos", 0) or 0),
+                    "paused": bool(self._get("pause", self._paused)),
+                }
+            self._preview_snapshot = snapshot
+            self._is_preview = True
+            if not self._load_current(track, suppress_end=True):
+                self._cancel_preview()
+                return False
+            timer = threading.Timer(max(1, float(seconds)), self._restore_preview)
+            timer.daemon = True
+            self._preview_timer = timer
+            timer.start()
+            return True
+
+    def _restore_preview(self):
+        with self._lock:
+            snapshot = self._preview_snapshot
+            self._preview_timer = None
+            self._preview_snapshot = None
+            if snapshot:
+                self._is_preview = False
+                if self._load_current(snapshot["track"], suppress_end=True):
+                    try:
+                        self._command("seek", snapshot["position"], "absolute")
+                        self._command("set", "pause", "yes" if snapshot["paused"] else "no")
+                        self._paused = snapshot["paused"]
+                        self._playing = True
+                    except Exception as exc:
+                        print("[player] Preview restore position failed:", repr(exc))
+            else:
+                self._is_preview = False
+                try:
+                    self._command("stop")
+                except Exception:
+                    pass
+                self.current_track = None
+                self.now_playing = None
+                self._playing = False
+                self._paused = False
 
     def queue(self, tracks):
         """Add already-prepared tracks to the application queue.
@@ -457,7 +574,7 @@ class MusicPlayer:
                 if not identity or identity in existing or identity == current_id:
                     continue
 
-                url = track.get("stream_url") or track.get("watch_url")
+                url = self._play_url(track)
                 if not url:
                     continue
 
@@ -485,11 +602,14 @@ class MusicPlayer:
 
     def next(self):
         """Skip to the next application-queue track."""
+        with self._lock:
+            self._cancel_preview()
         return self._advance_to_next()
 
     def previous(self):
         """Go back one track while preserving the upcoming queue."""
         with self._lock:
+            self._cancel_preview()
             if not self.history:
                 return False
 
@@ -514,6 +634,7 @@ class MusicPlayer:
         upcoming item stays in the same order.
         """
         with self._lock:
+            self._cancel_preview()
             try:
                 index = int(index)
             except (TypeError, ValueError):
@@ -539,9 +660,68 @@ class MusicPlayer:
                 print("[player] Queue selection failed:", repr(exc))
                 return False
 
+    def shuffle_queue(self):
+        import random
+        with self._lock:
+            random.shuffle(self._upcoming_tracks)
+        return True
+
     def clear_queue(self):
         with self._lock:
             self._upcoming_tracks.clear()
+        return True
+
+    def remove_queue_item(self, index):
+        with self._lock:
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                return False
+            if index < 0 or index >= len(self._upcoming_tracks):
+                return False
+            self._upcoming_tracks.pop(index)
+            return True
+
+    def filter_queue(self, predicate):
+        with self._lock:
+            before = len(self._upcoming_tracks)
+            self._upcoming_tracks = [track for track in self._upcoming_tracks if predicate(track)]
+            return before - len(self._upcoming_tracks)
+
+    def stop(self, clear_queue=True):
+        with self._lock:
+            self._cancel_preview()
+            if clear_queue:
+                self._upcoming_tracks.clear()
+            try:
+                self._command("stop")
+            except Exception:
+                pass
+            self.current_track = None
+            self.now_playing = None
+            self._playing = False
+            self._paused = False
+        return True
+
+    def filter_queue(self, predicate):
+        with self._lock:
+            before = len(self._upcoming_tracks)
+            self._upcoming_tracks = [track for track in self._upcoming_tracks if predicate(track)]
+            return before - len(self._upcoming_tracks)
+
+    def stop(self, clear_queue=True):
+        with self._lock:
+            self._cancel_preview()
+            if clear_queue:
+                self._upcoming_tracks.clear()
+            try:
+                self._command("stop")
+            except Exception:
+                pass
+            self.current_track = None
+            self.now_playing = None
+            self._playing = False
+            self._paused = False
         return True
 
     def status(self):
@@ -572,6 +752,8 @@ class MusicPlayer:
                 "time_pos": time_pos,
                 "history_length": history_length,
                 "queued_tracks": [dict(t) for t in self._upcoming_tracks[:MAX_QUEUE_SIZE]],
+                "player_ready": self.mpv is not None,
+                "player_error": self._last_error,
             }
 
         status.update(self.audio_analyzer.values())
@@ -579,6 +761,7 @@ class MusicPlayer:
 
     def close(self):
         with self._lock:
+            self._cancel_preview()
             self._closed = True
             self._playing = False
 
@@ -587,11 +770,13 @@ class MusicPlayer:
         except Exception as exc:
             print("[audio] analyzer close:", repr(exc))
             try:
-                self.mpv.command("quit")
+                if self.mpv is not None:
+                    self.mpv.command("quit")
             except Exception:
                 pass
             try:
-                self.mpv.terminate()
+                if self.mpv is not None:
+                    self.mpv.terminate()
             except Exception:
                 pass
 
